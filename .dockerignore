@@ -1,0 +1,24 @@
+# Build context = gốc repo. Chỉ gửi cho Docker những gì Dockerfile thật sự COPY:
+# context nhỏ thì build nhanh hơn, cache ít bị phá, và không lọt secret vào image.
+
+# Git và CI: không liên quan tới image, lại hay chứa thông tin nhạy cảm
+.git
+.github
+
+# Manifest K8s cũ của bài gốc: repo gitops quản lý thay
+k8s
+
+# Sản phẩm build/cài đặt ở máy local: phải build lại TRONG container,
+# không copy node_modules từ macOS vào (sai OS, có thể sai kiến trúc)
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+
+# File dành cho môi trường dev bằng docker-compose (có mật khẩu mẫu)
+**/.env
+code/docker-compose*.yml
+code/docker-compose.env
+code/Dockerfile*
+code/.vscode
+code/run.sh

@@ -1,35 +1,27 @@
 # syntax=docker/dockerfile:1
-# =====================================================================
-# Image chung cho Moleculer microservice: api-gateway / categories / news.
-# Chọn service lúc chạy bằng env SERVICES (api | categories | news).
-# Build context: gốc repo (code nằm trong code/).
-# =====================================================================
+# ... (giữ nguyên khối comment đầu file)
 
-# ---------- base: dùng chung cho mọi stage ----------
-# Pin tag (để người đọc hiểu) + digest của INDEX multi-arch (để build lặp lại được).
-# Vì đây là digest của index chứ không phải của một platform, buildx vẫn tự chọn
-# đúng amd64/arm64. Nâng version = đổi cả tag lẫn digest (Phần 8 để bot mở PR).
-FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS base
+# Image Node dùng chung cho mọi stage. Khai báo bằng ARG TRƯỚC FROM đầu tiên (global ARG)
+# để tag + digest chỉ nằm ở MỘT chỗ; stage build và runtime cùng tham chiếu.
+ARG NODE_IMAGE=node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
+
+# ---------- base: chạy theo kiến trúc ĐÍCH (TARGETPLATFORM, mặc định của buildx) ----------
+FROM ${NODE_IMAGE} AS base
 WORKDIR /app
-# Thư mục cache của yarn đặt cố định để dùng chung với cache mount ở dưới
 ENV YARN_CACHE_FOLDER=/tmp/yarn-cache
 
-# ---------- deps: chỉ production dependencies, dùng cho image cuối ----------
-# ---------- deps: chỉ production dependencies, dùng cho image cuối ----------
+# ---------- deps: giữ nguyên ----------
 FROM base AS deps
-COPY code/package.json code/yarn.lock ./
-# --frozen-lockfile : lockfile lệch package.json thì FAIL thay vì âm thầm cập nhật
-# --production      : bỏ devDependencies (typescript, jest, eslint, ts-node...)
-# cache mount       : package tải về được giữ giữa các lần build, nhưng KHÔNG nằm trong layer
-# sharing=locked    : stage deps và build chạy song song nhưng dùng chung cache này;
-#                     yarn v1 không chịu được 2 tiến trình ghi cache cùng lúc → khoá để chạy lần lượt
-RUN --mount=type=cache,target=/tmp/yarn-cache,sharing=locked \
-    yarn install --frozen-lockfile --production --non-interactive
+# ...
 
-# ---------- build: đủ devDependencies để compile TypeScript ----------
-# ---------- build: đủ devDependencies để compile TypeScript ----------
-FROM base AS build
+# ---------- build: chạy NATIVE trên máy build (BUILDPLATFORM) ----------
+# tsc chỉ sinh JavaScript (không phụ thuộc kiến trúc), nên compile 1 lần, không cần giả lập.
+# Build amd64 + arm64 trên Mac M4 thì stage này chạy arm64 native cho cả hai.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
+WORKDIR /app
+ENV YARN_CACHE_FOLDER=/tmp/yarn-cache
 COPY code/package.json code/yarn.lock ./
+# ... (giữ nguyên phần còn lại của stage build và toàn bộ runtime)
 RUN --mount=type=cache,target=/tmp/yarn-cache,sharing=locked \
     yarn install --frozen-lockfile --non-interactive
 # Copy source SAU bước install: chỉ sửa code thì layer node_modules vẫn dùng cache

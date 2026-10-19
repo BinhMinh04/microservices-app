@@ -1,27 +1,43 @@
 # syntax=docker/dockerfile:1
-# ... (giữ nguyên khối comment đầu file)
+# =====================================================================
+# Image chung cho Moleculer microservice: api-gateway / categories / news.
+# Chọn service lúc chạy bằng env SERVICES (api | categories | news).
+# Build context: gốc repo (code nằm trong code/).
+# Multi-arch: docker buildx build --platform linux/amd64,linux/arm64 ...
+# =====================================================================
 
 # Image Node dùng chung cho mọi stage. Khai báo bằng ARG TRƯỚC FROM đầu tiên (global ARG)
-# để tag + digest chỉ nằm ở MỘT chỗ; stage build và runtime cùng tham chiếu.
+# để tag + digest chỉ nằm ở MỘT chỗ.
+# Pin tag (để người đọc hiểu) + digest của INDEX multi-arch (để build lặp lại được).
+# Vì là digest của index nên buildx vẫn tự chọn đúng amd64/arm64.
+# Nâng version = đổi cả tag lẫn digest (Phần 8 để bot mở PR).
 ARG NODE_IMAGE=node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
-# ---------- base: chạy theo kiến trúc ĐÍCH (TARGETPLATFORM, mặc định của buildx) ----------
+# ---------- base: chạy theo kiến trúc ĐÍCH (TARGETPLATFORM) ----------
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
+# Thư mục cache của yarn đặt cố định để dùng chung với cache mount ở dưới
 ENV YARN_CACHE_FOLDER=/tmp/yarn-cache
 
-# ---------- deps: giữ nguyên ----------
+# ---------- deps: chỉ production dependencies, theo kiến trúc ĐÍCH ----------
+# Giữ ở TARGETPLATFORM: nếu sau này có native module, node_modules phải khớp kiến trúc chạy.
 FROM base AS deps
-# ...
+COPY code/package.json code/yarn.lock ./
+# --frozen-lockfile : lockfile lệch package.json thì FAIL thay vì âm thầm cập nhật
+# --production      : bỏ devDependencies (typescript, jest, eslint, ts-node...)
+# cache mount       : package tải về được giữ giữa các lần build, nhưng KHÔNG nằm trong layer
+# sharing=locked    : các stage chạy song song dùng chung cache này; yarn v1 không chịu được
+#                     2 tiến trình ghi cache cùng lúc → khoá để chạy lần lượt
+RUN --mount=type=cache,target=/tmp/yarn-cache,sharing=locked \
+    yarn install --frozen-lockfile --production --non-interactive
 
 # ---------- build: chạy NATIVE trên máy build (BUILDPLATFORM) ----------
-# tsc chỉ sinh JavaScript (không phụ thuộc kiến trúc), nên compile 1 lần, không cần giả lập.
-# Build amd64 + arm64 trên Mac M4 thì stage này chạy arm64 native cho cả hai.
+# tsc chỉ sinh JavaScript (không phụ thuộc kiến trúc) → compile 1 lần, không cần giả lập.
+# --platform phải áp lên image thật, nên không dùng "FROM base" mà khai báo lại WORKDIR/ENV.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /app
 ENV YARN_CACHE_FOLDER=/tmp/yarn-cache
 COPY code/package.json code/yarn.lock ./
-# ... (giữ nguyên phần còn lại của stage build và toàn bộ runtime)
 RUN --mount=type=cache,target=/tmp/yarn-cache,sharing=locked \
     yarn install --frozen-lockfile --non-interactive
 # Copy source SAU bước install: chỉ sửa code thì layer node_modules vẫn dùng cache
@@ -39,22 +55,21 @@ RUN apt-get update \
 
 # NODE_ENV=production : mặc định an toàn; manifest có thể đổi (migrate/config.js có key production)
 # PATH                : CMD gọi thẳng moleculer-runner, và exec("sequelize-cli ...") tìm thấy lệnh
-#                       mà không cần yarn làm trung gian (đây là bẫy ở câu 1, bước 1)
+#                       mà không cần yarn làm trung gian
 # SERVICEDIR          : moleculer-runner tìm service đã compile ở đây
 ENV NODE_ENV=production \
     PATH=/app/node_modules/.bin:$PATH \
     SERVICEDIR=dist/services
 
-# Chỉ copy đúng những gì cần lúc chạy (đáp án câu 3).
-# Không --chown: file thuộc root, user chạy app chỉ đọc được, nên app không tự sửa code của chính nó.
+# Chỉ copy đúng những gì cần lúc chạy.
+# Không --chown: file thuộc root, user chạy app chỉ đọc được → app không tự sửa code của chính nó.
 COPY --from=deps  /app/node_modules ./node_modules
 COPY --from=build /app/dist         ./dist
 COPY code/package.json code/.sequelizerc ./
 COPY code/migrate ./migrate
 COPY code/public  ./public
 
-# Dùng UID dạng số thay vì tên "node": kubelet chỉ verify được runAsNonRoot khi USER là số.
-# Viết USER node thì Phần 6 sẽ dính lỗi CreateContainerConfigError.
+# UID dạng số thay vì tên "node": kubelet chỉ verify được runAsNonRoot khi USER là số.
 USER 1000:1000
 
 # Chỉ mang tính tài liệu. Cổng thật do env PORT quyết định (app mặc định 3001).

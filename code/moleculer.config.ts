@@ -71,7 +71,16 @@ const brokerConfig: BrokerOptions = {
 	 * stopped: async (broker: ServiceBroker): Promise<void> => {},
 	*/
 	created: (broker: ServiceBroker): void => {
-		if (process.env.NODE_ENV !== "dev" && process.env.SERVICES === "api") {
+		// Migration chỉ chạy ở pod api, và chỉ khi không ở môi trường dev.
+		// RUN_MIGRATIONS=false: tắt migration trong app vì đã có Job riêng chạy trước
+		// (Kustomize ở Phần 3, PreSync hook của Argo CD ở Phần 4).
+		// Mặc định (không set) giữ nguyên hành vi cũ, nên docker-compose của repo gốc
+		// và ai chạy image theo cách cũ không bị ảnh hưởng.
+		if (
+			process.env.NODE_ENV !== "dev" &&
+			process.env.SERVICES === "api" &&
+			process.env.RUN_MIGRATIONS !== "false"
+		) {
 			const migrate = exec("sequelize-cli db:migrate", { env: process.env }, console.log);
 			migrate.stdout.pipe(process.stdout);
 			migrate.stderr.pipe(process.stderr);
